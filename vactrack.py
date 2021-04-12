@@ -2,17 +2,8 @@
 
 # vactrack.py code by @thetafferboy
 
+import requests
 from datetime import date, timedelta
-import pandas as pd
-import tweepy
-from datetime import datetime
-
-# Twitter authorisation - you need to fill in your own API details (https://dev.twitter.com)
-auth = tweepy.OAuthHandler("",
-                           "")
-auth.set_access_token("-",
-                      "")
-api = tweepy.API(auth)
 
 # You can change population of UK if you wish, which will change % calculations
 population_of_uk = 52632729
@@ -21,47 +12,70 @@ population_of_uk = 52632729
 bar_total = 15
 perc_per_bar = 100/bar_total
 
-# This sets date to 2 days ago, as there is a lag in government data reporting. API requests will fail if you request date which has no data yet
+# This sets date to 2 days ago, as there is a lag in government data reporting.
+# API requests will fail if you request date which has no data yet
 date_to_check = (date.today() - timedelta(2)).isoformat()
-
-# GOV UK data source API:
-data_read = pd.read_csv(
-    'https://api.coronavirus.data.gov.uk/v2/data?areaType=overview&metric=cumAdmissions&metric=cumPeopleVaccinatedFirstDoseByPublishDate&metric=cumPeopleVaccinatedSecondDoseByPublishDate&format=csv', delimiter=',')
+previous_date = (date.today() - timedelta(3)).isoformat()
 
 
-def AddDataToTweet(dataValue, textValue):
-    dataToAdd = ''
-    total_vacs = data_read.loc[data_read.date ==
-                               date_to_check, dataValue].values[0]
-    perc_rounded = round(((total_vacs / population_of_uk) * 100), 2)
-
-    solid_bars_to_print = perc_rounded // perc_per_bar
-    empty_bars_to_print = bar_total - solid_bars_to_print
-
-    dataToAdd += textValue
-    while solid_bars_to_print > 0:
-        dataToAdd += '▓'
-        solid_bars_to_print -= 1
-
-    while empty_bars_to_print > 0:
-        dataToAdd += '░'
-        empty_bars_to_print -= 1
-
-    dataToAdd += ' ' + str(perc_rounded) + '%\n\n'
-    return dataToAdd
+def get_data():
+    # GOV UK data source API:
+    res = requests.get(
+        'https://api.coronavirus.data.gov.uk/v2/data'
+        '?areaType=overview'
+        '&metric=cumPeopleVaccinatedFirstDoseByPublishDate'
+        '&metric=cumPeopleVaccinatedSecondDoseByPublishDate'
+    )
+    res.raise_for_status()
+    return res.json()
 
 
-def SourceAndSendTweet(stringToTweet):
-    stringToTweet += 'As of '+str(date_to_check)+'\n'
-    stringToTweet += 'Using data from UK Gov API\n'
-    stringToTweet += '#CovidVaccine'
-    print(stringToTweet)
-    api.update_status(stringToTweet)
+def get_count(field, data):
+    date = next(d for d in data['body'] if d['date'] == date_to_check)
+    previous = next(d for d in data['body'] if d['date'] == previous_date)
+
+    return date[field], previous[field]
 
 
-stringToTweet = ''
-stringToTweet += AddDataToTweet('cumPeopleVaccinatedFirstDoseByPublishDate',
-                                '1st dose of vaccine progress: \n\n')
-stringToTweet += AddDataToTweet('cumPeopleVaccinatedSecondDoseByPublishDate',
-                                '2nd dose of vaccine progress: \n\n')
-SourceAndSendTweet(stringToTweet)
+def calc_percent(dose, previous):
+    percent = (dose / population_of_uk) * 100
+    previous_percent = (previous / population_of_uk) * 100
+
+    return round(percent, 2), round(percent - previous_percent, 2)
+
+
+def create_bar(percent):
+    solid_count = int(percent // perc_per_bar)
+    empty_count = bar_total - solid_count
+
+    return '▓'*solid_count + '░'*empty_count
+
+
+def main():
+    data = get_data()
+    first_dose, first_dose_previous = get_count('cumPeopleVaccinatedFirstDoseByPublishDate', data)
+    second_dose, second_dose_previous = get_count(
+        'cumPeopleVaccinatedSecondDoseByPublishDate', data)
+
+    first_dose_percent, increase = calc_percent(first_dose, first_dose_previous)
+    second_dose_percent, second_dose_increase = calc_percent(second_dose, second_dose_previous)
+
+    print(f"""
+1st dose of vaccine progress:
+
+{create_bar(first_dose_percent)} {first_dose_percent:.2f}% (+{increase:.2f}%)
+
+2nd dose of vaccine progress:
+
+{create_bar(second_dose_percent)} {second_dose_percent:.2f}% (+{second_dose_increase:.2f}%)
+
+
+Total increase {increase + second_dose_increase:.2f}%
+As of {date_to_check}
+
+Using data from UK Gov API
+#CovidVaccine
+""")
+
+
+main()
